@@ -17,9 +17,7 @@ from IstkharMusic.misc import SUDOERS
 async def ping_com(client, message: Message, _):
     start = datetime.now()
     response = await message.reply_photo(
-        await message.reply_text(
-    text
-),
+        has_spoiler=True
         photo="https://files.catbox.moe/leaexg.jpg",
         caption=_["ping_1"].format(app.mention),
     )
