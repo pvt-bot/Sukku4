@@ -1,195 +1,158 @@
 import os
 import re
-
+import random
 import aiofiles
 import aiohttp
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 from py_yt import VideosSearch
-
 from config import YOUTUBE_IMG_URL
+from IstkharMusic import app
 
+CACHE_DIR = "cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
-def changeImageSize(maxWidth, maxHeight, image):
-    widthRatio = maxWidth / image.size[0]
-    heightRatio = maxHeight / image.size[1]
-    newWidth = int(widthRatio * image.size[0])
-    newHeight = int(heightRatio * image.size[1])
-    newImage = image.resize((newWidth, newHeight))
-    return newImage
+DUAL_TONES = [
+    ((20, 20, 20), (240, 240, 240)),
+    ((25, 30, 45), (250, 250, 250)),
+    ((15, 40, 65), (230, 230, 230)),
+    ((55, 10, 80), (255, 245, 255))
+]
 
-
-async def get_thumb(videoid):
-    if os.path.isfile(f"cache/{videoid}.png"):
-        return f"cache/{videoid}.png"
-
-    url = f"https://www.youtube.com/watch?v={videoid}"
+def trim_to_width(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> str:
+    ellipsis = "…"
     try:
-        results = VideosSearch(url, limit=1)
-        for result in (await results.next())["result"]:
-            try:
-                title = result["title"]
-                title = re.sub("\W+", " ", title)
-                title = title.title()
-            except:
-                title = "Unsupported Title"
-            try:
-                duration = result["duration"]
-            except:
-                duration = "Unknown"
-            thumbnail = result["thumbnails"][0]["url"].split("?")[0]
-            try:
-                views = result["viewCount"]["short"]
-            except:
-                views = "Unknown Views"
+        if font.getlength(text) <= max_w:
+            return text
+        for i in range(len(text)-1, 0, -1):
+            if font.getlength(text[:i] + ellipsis) <= max_w:
+                return text[:i] + ellipsis
+    except:
+        return text[:max_w//10] + "…" if len(text) > max_w//10 else text
+    return ellipsis
 
+
+async def get_thumb(videoid: str, player_username: str = None) -> str:
+    if player_username is None:
+        player_username = app.username
+
+    cache_path = os.path.join(CACHE_DIR, f"{videoid}_hexagon.png")
+    if os.path.exists(cache_path):
+        return cache_path
+
+
+    try:
+        results = VideosSearch(f"https://www.youtube.com/watch?v={videoid}", limit=1)
+        search = await results.next()
+        data = search.get("result", [])[0]
+        title = re.sub(r"\W+", " ", data.get("title", "Unknown Title")).title()
+        thumbnail = data.get("thumbnails", [{}])[0].get("url", YOUTUBE_IMG_URL)
+        duration = data.get("duration")
+        views = data.get("viewCount", {}).get("short", "Unknown Views")
+    except:
+        title, thumbnail, duration, views = "Unknown", YOUTUBE_IMG_URL, None, "Unknown"
+
+    is_live = not duration or str(duration).lower() in {"live", "live now", ""}
+    duration_text = "Live" if is_live else duration or "Unknown"
+
+    thumb_path = os.path.join(CACHE_DIR, f"thumb_{videoid}.png")
+    try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(thumbnail) as resp:
-                if resp.status == 200:
-                    f = await aiofiles.open(f"cache/thumb{videoid}.png", mode="wb")
-                    await f.write(await resp.read())
-                    await f.close()
-
-        youtube = Image.open(f"cache/thumb{videoid}.png")
-
-        GLOW_COLOR = "#ff0099"  # Neon Pink
-        BORDER_COLOR = "#FF1493"  # Deep Pink
-        image1 = changeImageSize(1280, 720, youtube)
-        image1 = image1.filter(ImageFilter.GaussianBlur(20))
-        image1 = ImageEnhance.Brightness(image1).enhance(0.4)
-
-        thumb_width = 840
-        thumb_height = 460
-
-        youtube_thumb = youtube.resize((thumb_width, thumb_height))
-
-        mask = Image.new("L", (thumb_width, thumb_height), 0)
-        draw_mask = ImageDraw.Draw(mask)
-        draw_mask.rounded_rectangle(
-            [(0, 0), (thumb_width, thumb_height)], radius=20, fill=255
-        )
-        youtube_thumb.putalpha(mask)
-        center_x = 640
-        center_y_img = 300
-        thumb_x = center_x - (thumb_width // 2)
-        thumb_y = center_y_img - (thumb_height // 2)
-        thumb_x2 = thumb_x + thumb_width
-        thumb_y2 = thumb_y + thumb_height
-
-        glow_layer = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
-        draw_glow = ImageDraw.Draw(glow_layer)
-
-        glow_expand = 20
-        draw_glow.rounded_rectangle(
-            [
-                (thumb_x - glow_expand, thumb_y - glow_expand),
-                (thumb_x2 + glow_expand, thumb_y2 + glow_expand),
-            ],
-            radius=30,
-            fill=GLOW_COLOR,
-        )
-        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(30))
-        image1.paste(glow_layer, (0, 0), glow_layer)
-        border_layer = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
-        draw_border = ImageDraw.Draw(border_layer)
-
-        border_expand = 5
-        draw_border.rounded_rectangle(
-            [
-                (thumb_x - border_expand, thumb_y - border_expand),
-                (thumb_x2 + border_expand, thumb_y2 + border_expand),
-            ],
-            radius=25,
-            fill=BORDER_COLOR,
-        )
-        image1.paste(border_layer, (0, 0), border_layer)
-
-        image1.paste(youtube_thumb, (thumb_x, thumb_y), youtube_thumb)
-
-        draw = ImageDraw.Draw(image1)
-
-        try:
-            font_title = ImageFont.truetype("IstkharMusic/assets/font.ttf", 45)
-            font_details = ImageFont.truetype("IstkharMusic/assets/font2.ttf", 30)
-            font_watermark = ImageFont.truetype("IstkharMusic/assets/font2.ttf", 25)
-        except:
-            font_title = ImageFont.truetype("arial.ttf", 45)
-            font_details = ImageFont.truetype("arial.ttf", 30)
-            font_watermark = ImageFont.truetype("arial.ttf", 25)
-
-        def get_text_width(text, font):
-            if hasattr(draw, "textlength"):
-                return draw.textlength(text, font=font)
-            else:
-                return draw.textsize(text, font=font)[0]
-
-        if len(title) > 45:
-            title = title[:45] + "..."
-
-        w_title = get_text_width(title, font_title)
-        text_y_pos = thumb_y2 + 50
-
-        draw.text(
-            ((1280 - w_title) / 2, text_y_pos),
-            text=title,
-            fill="white",
-            font=font_title,
-            stroke_width=1,
-            stroke_fill="black",
-        )
-
-        stats_text = f"YouTube : {views} | Time : {duration} | Player : @MusarratMusicBot"
-        w_stats = get_text_width(stats_text, font_details)
-        draw.text(
-            ((1280 - w_stats) / 2, text_y_pos + 70),
-            text=stats_text,
-            fill=BORDER_COLOR,
-            font=font_details,
-            stroke_width=1,
-            stroke_fill="black",
-        )
-
-        text_classy = "@IamIstkhar"
-        w_classy = get_text_width(text_classy, font_watermark)
-
-        draw.text(
-            (1280 - w_classy - 30, 30),
-            text=text_classy,
-            fill="yellow",
-            font=font_watermark,
-            stroke_width=1,
-            stroke_fill="black",
-        )
-
-        draw.text(
-            (30, 680),
-            text="@llTHUNDER_KINGll",
-            fill="white",
-            font=font_watermark,
-            stroke_width=1,
-            stroke_fill="black",
-        )
-
-        try:
-            os.remove(f"cache/thumb{videoid}.png")
-        except:
-            pass
-
-        file_name = f"cache/{videoid}.png"
-        image1.save(file_name)
-        return file_name
-
-    except Exception as e:
-        print(e)
+            async with session.get(thumbnail) as r:
+                if r.status == 200:
+                    async with aiofiles.open(thumb_path, "wb") as f:
+                        await f.write(await r.read())
+    except:
         return YOUTUBE_IMG_URL
 
 
-async def get_qthumb(vidid):
+    bg = Image.open(thumb_path).resize((1280, 720)).convert("RGB")
+    bg = bg.filter(ImageFilter.GaussianBlur(30)).convert("RGBA")
+    overlay = Image.new("RGBA", (1280, 720), (255, 255, 255, 40))
+    bg = Image.alpha_composite(bg, overlay)
+
+    thumb = Image.open(thumb_path).resize((520, 520)).convert("RGBA")
+
+    hex_points = [
+        (260, 0),
+        (520, 130),
+        (520, 390),
+        (260, 520),
+        (0, 390),
+        (0, 130)
+    ]
+
+    mask = Image.new("L", (520, 520), 0)
+    draw_mask = ImageDraw.Draw(mask)
+    draw_mask.polygon(hex_points, fill=255)
+
+    hex_thumb = Image.new("RGBA", (520, 520), (0, 0, 0, 0))
+    hex_thumb.paste(thumb, (0, 0), mask)
+
+    border_img = Image.new("RGBA", (600, 600), (0, 0, 0, 0))
+    d = ImageDraw.Draw(border_img)
+    offset = 40
+
+    border_hex = [(x + offset, y + offset) for x, y in hex_points]
+
+    d.polygon(border_hex, outline=(90, 0, 60, 255), width=26)
+
+    d.polygon(border_hex, outline=(255, 100, 200, 180), width=10)
+
+    d.polygon(border_hex, outline=(255, 40, 150, 255), width=16)
+
+    bg.paste(border_img, (60, 60), border_img)
+    bg.paste(hex_thumb, (100, 100), hex_thumb)
+
+    draw = ImageDraw.Draw(bg)
+
     try:
-        url = f"https://www.youtube.com/watch?v={vidid}"
-        results = VideosSearch(url, limit=1)
-        for result in (await results.next())["result"]:
-            thumbnail = result["thumbnails"][0]["url"].split("?")[0]
-        return thumbnail
-    except Exception as e:
-        print(e)
-        return YOUTUBE_IMG_URL
+        title_font = ImageFont.truetype("IstkharMusic/assets/font.ttf", 44)
+        meta_font = ImageFont.truetype("IstkharMusic/assets/font.ttf", 26)
+        tag_font = ImageFont.truetype("IstkharMusic/assets/font2.ttf", 28)
+    except:
+        title_font = meta_font = tag_font = ImageFont.load_default()
+
+    title_x = 700
+    title_y = 180
+    title_text = trim_to_width(title, title_font, 480)
+    draw.text((title_x, title_y), title_text, fill=(0, 0, 0), font=title_font)
+
+    meta = (
+        f"YouTube | {views}\n"
+        f"Duration | {duration_text}\n"
+        f"Player | @{player_username}\n"
+    )
+    draw.multiline_text(
+        (title_x, title_y + 90),
+        meta,
+        fill=(0, 0, 0),
+        spacing=10,
+        font=meta_font
+    )
+
+    bar_y = title_y + 240
+    bar_w = 390
+
+    draw.rounded_rectangle(
+        (title_x, bar_y, title_x + bar_w, bar_y + 14),
+        8,
+        fill=(255, 255, 255, 80)
+    )
+
+    draw.rounded_rectangle(
+        (title_x, bar_y, title_x + bar_w // 2, bar_y + 14),
+        8,
+        fill=(0, 0, 0)
+    )
+
+    brand = "DEV :- @IamIstkhar"
+    w = tag_font.getlength(brand)
+    draw.text((1280 - w - 50, 680), brand, fill=(0, 0, 0), font=tag_font)
+
+    try:
+        os.remove(thumb_path)
+    except:
+        pass
+
+    bg.save(cache_path)
+    return cache_path
